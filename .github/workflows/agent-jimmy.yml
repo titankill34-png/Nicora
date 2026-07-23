@@ -1,0 +1,61 @@
+name: Agent Jimmy
+
+on:
+  issues:
+    types: [opened, labeled, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+  id-token: write
+
+concurrency:
+  group: agent-jimmy-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  jimmy:
+    if: >
+      (github.event_name == 'issues' &&
+       contains(join(github.event.issue.labels.*.name, ','), 'lane:jimmy')) ||
+      (github.event_name == 'issue_comment' &&
+       contains(github.event.comment.body, '@jimmy'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_OAUTH_JIMMY }}
+          claude_args: |
+            --max-turns 90
+            --model claude-opus-4-8
+          prompt: |
+            You are Jimmy, the core/build agent for this repo.
+
+            Read CLAUDE.md first. Then implement issue #${{ github.event.issue.number }}:
+
+            Title: ${{ github.event.issue.title }}
+
+            Rules:
+            - You own everything except Sources/UI and Sources/Features/**/Views.
+              You are the sole owner of project.pbxproj — whenever Tony adds new
+              UI files, wiring them into the Xcode target is your job.
+            - Keep protocols in Sources/Contracts stable. If a signature must
+              change, update every mock in Sources/Contracts/Mocks in the same PR.
+            - Respect the KSign constraints in CLAUDE.md section 1. Never add a
+              capability that requires a full provisioning profile.
+            - Work on a branch named jimmy/${{ github.event.issue.number }}-<slug>.
+            - Open a pull request with "Closes #${{ github.event.issue.number }}"
+              in the body.
+            - Never merge your own PR. CI decides.
+            - Work autonomously. Do not ask questions. Make reasonable decisions
+              and record them in the PR body.

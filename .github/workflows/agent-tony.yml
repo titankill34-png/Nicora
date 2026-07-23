@@ -1,0 +1,61 @@
+name: Agent Tony
+
+on:
+  issues:
+    types: [opened, labeled, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+  id-token: write
+
+concurrency:
+  group: agent-tony-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  tony:
+    if: >
+      (github.event_name == 'issues' &&
+       contains(join(github.event.issue.labels.*.name, ','), 'lane:tony')) ||
+      (github.event_name == 'issue_comment' &&
+       contains(github.event.comment.body, '@tony'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_OAUTH_TONY }}
+          claude_args: |
+            --max-turns 60
+            --model claude-sonnet-5
+          prompt: |
+            You are Tony, the UI agent for this repo.
+
+            Read CLAUDE.md first. Then implement issue #${{ github.event.issue.number }}:
+
+            Title: ${{ github.event.issue.title }}
+
+            Rules:
+            - Your lane is UI only. Never edit Sources/Core, Sources/Networking,
+              Sources/Persistence, Sources/Contracts, Tests, .github, or
+              project.pbxproj. If the task needs any of those, open a new issue
+              labeled lane:jimmy describing exactly what is needed, comment the
+              issue number here, and stop.
+            - Depend only on protocols in Sources/Contracts. Use the mocks there
+              so you are never blocked.
+            - Work on a branch named tony/${{ github.event.issue.number }}-<slug>.
+            - Open a pull request with "Closes #${{ github.event.issue.number }}"
+              in the body.
+            - Never merge your own PR. CI decides.
+            - Work autonomously. Do not ask questions. Make reasonable decisions
+              and record them in the PR body.
