@@ -1,0 +1,107 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: 'Publish a GitHub Release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SCHEME: Nicora
+  PROJECT_FILE: Nicora.xcodeproj
+  XCODE_VERSION: '16.2'
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: spm-
+
+      - name: Compute version
+        id: ver
+        run: |
+          echo "build=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Archive (unsigned)
+        run: |
+          set -eo pipefail
+          FLAG="-project"
+          [[ "${PROJECT_FILE}" == *.xcworkspace ]] && FLAG="-workspace"
+          xcodebuild archive \
+            $FLAG "${PROJECT_FILE}" \
+            -scheme "${SCHEME}" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "${RUNNER_TEMP}/${SCHEME}.xcarchive" \
+            -skipMacroValidation \
+            CURRENT_PROJECT_VERSION=${{ steps.ver.outputs.build }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" CODE_SIGN_ENTITLEMENTS="" \
+            ENABLE_BITCODE=NO | xcbeautify
+
+      - name: Package .ipa
+        id: pack
+        run: |
+          set -eo pipefail
+          APPS="${RUNNER_TEMP}/${SCHEME}.xcarchive/Products/Applications"
+          WORK="${RUNNER_TEMP}/pack"
+          mkdir -p "${WORK}/Payload"
+          cp -R "${APPS}/"*.app "${WORK}/Payload/"
+          find "${WORK}/Payload" -name "_CodeSignature" -type d -exec rm -rf {} + || true
+          find "${WORK}/Payload" -name "embedded.mobileprovision" -delete || true
+          NAME="${SCHEME}-${{ steps.ver.outputs.version }}.ipa"
+          ( cd "${WORK}" && zip -qry "${RUNNER_TEMP}/${NAME}" Payload )
+          echo "path=${RUNNER_TEMP}/${NAME}" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.name }}
+          path: ${{ steps.pack.outputs.path }}
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish Release
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', steps.ver.outputs.build) }}
+          name: ${{ env.SCHEME }} ${{ steps.ver.outputs.version }}
+          body: |
+            **Unsigned** IPA — sign with KSign before installing.
+            commit `${{ github.sha }}`
+          files: ${{ steps.pack.outputs.path }}
+          prerelease: ${{ github.ref_type != 'tag' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
