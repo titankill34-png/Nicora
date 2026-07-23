@@ -1,0 +1,111 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# taskwatch-v2 — Claude-only task watcher, multi-repo, multi-account
+# usage: taskwatch-v2 <repo-name-from-config>
+set -uo pipefail
+
+CONF="${TASKWATCH_CONF:-$HOME/.config/aicc/repos.conf}"
+POLL="${TASKWATCH_POLL_SECONDS:-30}"
+NAME="${1:-}"
+
+[ -z "$NAME" ] && { echo "usage: taskwatch-v2 <repo-name>"; exit 2; }
+[ -f "$CONF" ] || { echo "missing config: $CONF"; exit 2; }
+
+# config line: name|local_path|owner/repo|token_file|default_model
+LINE="$(grep -v '^#' "$CONF" | grep -v '^$' | awk -F'|' -v n="$NAME" '$1==n' | head -1)"
+[ -z "$LINE" ] && { echo "no config entry for '$NAME'"; exit 2; }
+
+IFS='|' read -r _ REPO_PATH REPO_SLUG TOKEN_FILE DEFAULT_MODEL <<<"$LINE"
+DEFAULT_MODEL="${DEFAULT_MODEL:-claude-sonnet-5}"
+
+[ -d "$REPO_PATH" ] || { echo "repo path not found: $REPO_PATH"; exit 2; }
+[ -f "$TOKEN_FILE" ] || { echo "token file not found: $TOKEN_FILE"; exit 2; }
+
+export GH_TOKEN
+GH_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+
+LOGDIR="$HOME/logs/$NAME"
+mkdir -p "$LOGDIR"
+AGENT="$HOME/bin/agent-run"
+NOTIFY="$HOME/bin/github-lifecycle-notify"
+
+gh_() { gh "$@" --repo "$REPO_SLUG"; }
+
+notify() { [ -x "$NOTIFY" ] && "$NOTIFY" "$1" "$2" >/dev/null 2>&1 || true; }
+
+log() { echo "[$NAME $(date +%H:%M:%S)] $*"; }
+
+pick_model() {
+  local labels="$1"
+  case ",$labels," in
+    *,deep,*) echo "claude-fable-5" ;;
+    *,hard,*) echo "claude-opus-4-8" ;;
+    *)        echo "$DEFAULT_MODEL" ;;
+  esac
+}
+
+trap 'log "stopped"; exit 0' INT TERM HUP
+
+log "started — repo=$REPO_SLUG path=$REPO_PATH model=$DEFAULT_MODEL poll=${POLL}s"
+
+while true; do
+  ISSUE="$(gh_ issue list --label task --state open \
+            --json number --jq '.[0].number' 2>/dev/null)"
+
+  if [ -n "$ISSUE" ] && [ "$ISSUE" != "null" ]; then
+    LABELS="$(gh_ issue view "$ISSUE" --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null)"
+
+    # one writer per issue
+    if [[ ",$LABELS," == *",task-running,"* ]]; then
+      log "#$ISSUE already running elsewhere — skip"
+      sleep "$POLL"; continue
+    fi
+
+    MODEL="$(pick_model "$LABELS")"
+    TITLE="$(gh_ issue view "$ISSUE" --json title --jq .title 2>/dev/null)"
+    BODY="$(gh_ issue view "$ISSUE" --json body --jq .body 2>/dev/null)"
+    OUT="$LOGDIR/issue-$ISSUE.md"
+
+    log "claim #$ISSUE ($MODEL) — $TITLE"
+    gh_ issue edit "$ISSUE" --add-label task-running --remove-label task >/dev/null 2>&1
+    notify "$ISSUE" running
+
+    cd "$REPO_PATH" || { log "cd failed"; sleep "$POLL"; continue; }
+    git fetch --all --prune >/dev/null 2>&1
+    git checkout main >/dev/null 2>&1 && git pull --rebase origin main >/dev/null 2>&1
+
+    PROMPT="Read CLAUDE.md in this repo first, then implement issue #$ISSUE.
+
+Title: $TITLE
+
+$BODY
+
+Rules:
+- Work on branch task/$ISSUE-<slug> off main.
+- Open a pull request whose body contains: Closes #$ISSUE
+- Never merge your own PR. The boss merges.
+- Never commit tokens, keys, .p12, .mobileprovision, or credentials.
+- If the task is impossible or underspecified, say exactly why and stop.
+- Work autonomously. Do not ask questions."
+
+    if ANTHROPIC_MODEL="$MODEL" "$AGENT" -p "$PROMPT" \
+         --dangerously-skip-permissions > "$OUT" 2>&1; then
+      log "#$ISSUE done"
+      gh_ issue edit "$ISSUE" --remove-label task-running --add-label needs-review >/dev/null 2>&1
+      notify "$ISSUE" done
+      gh_ issue comment "$ISSUE" --body "**[$NAME #$ISSUE done]** model: \`$MODEL\`
+
+$(tail -c 3000 "$OUT")" >/dev/null 2>&1
+    else
+      log "#$ISSUE FAILED"
+      gh_ issue edit "$ISSUE" --remove-label task-running --add-label blocked >/dev/null 2>&1
+      notify "$ISSUE" blocked
+      gh_ issue comment "$ISSUE" --body "**[$NAME #$ISSUE blocked]** model: \`$MODEL\`
+
+\`\`\`
+$(tail -c 2000 "$OUT")
+\`\`\`" >/dev/null 2>&1
+    fi
+  fi
+
+  sleep "$POLL"
+done

@@ -1,0 +1,7 @@
+# ~/.config/aicc/repos.conf
+# name|local_path|owner/repo|token_file|default_model
+#
+# token_file = ไฟล์ที่มี GitHub PAT ของบัญชีนั้น (chmod 600, อยู่นอก repo เสมอ)
+
+promptvault|/data/data/com.termux/files/home/PromptVault|kakandee007-netizen/PromptVault|/data/data/com.termux/files/home/.config/aicc/tok-kakandee|claude-sonnet-5
+nicora|/data/data/com.termux/files/home/Nicora|titankill34-png/Nicora|/data/data/com.termux/files/home/.config/aicc/tok-titankill|claude-sonnet-5
