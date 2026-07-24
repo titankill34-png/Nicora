@@ -1,12 +1,12 @@
 # STATUS
 
-updated: 2026-07-24 16:50:31 +07
+updated: 2026-07-24 16:51:19 +07
 repo: `titankill34-png/Nicora`
 worker: `claude`
-phase: **running**
-current issue: #5 — เพิ่ม README badge (model `claude-sonnet-5`)
+phase: **idle**
 
 ## Open queue
-- #5 เพิ่ม README badge [task-running]
+- #5 เพิ่ม README badge [needs-review]
 
 ## Open PRs
+- #6 เพิ่ม README badge (`task/5-readme-badge`)
